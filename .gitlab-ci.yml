@@ -2,8 +2,8 @@
 variables:
   APPLICATION_NAME: "hoymiles-dtu"
   ARTIFACT_NAME: "hoymiles-dtu"
-  DOCKER_REGISTRY_URL: "hub.docker.com/banny310"
-  DOCKER_REGISTRY_USERNAME: "banny310"
+  DOCKER_REGISTRY_URL: "hub.docker.com/sakrut"
+  DOCKER_REGISTRY_USERNAME: "sakrut"
   MAVEN_LOCAL_REPO: "/projects-cache/.m2/"
   MAVEN_OPTS: '-DXmx1024m -DXX:MaxPermSize=256m'
   MAVEN_CLI_OPTS: "--batch-mode --update-snapshots --errors --fail-at-end"
@@ -30,16 +30,17 @@ build-artifact:
 #      - tags
 
 .build-docker-template:
-  image: docker:20.10.12
+  image: docker:git
   stage: deploy
   dependencies:
     - build-artifact
   before_script:
-    - apk update && apk add git
     - BUILD_VERSION=`git describe --abbrev=0 --tags 2>/dev/null || echo "0.1.0"`
+    - DOCKER_BUILDKIT=1
+    - docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
   script:
-    - docker build --build-arg JAR_FILE=artifacts/${APPLICATION_NAME}-${BUILD_VERSION}.jar --build-arg BUILD_FROM=${BUILD_FROM} --build-arg BUILD_ARCH=${BUILD_ARCH} --platform ${DOCKER_PLATFORM} --tag ${DOCKER_TAG}:latest --tag ${DOCKER_TAG}:${BUILD_VERSION} --file docker/Dockerfile .
     - docker login -u ${DOCKER_REGISTRY_USERNAME} -p ${HUBDOCKER_PASSWORD}
+    - docker build --platform ${DOCKER_PLATFORM} --build-arg  JAR_FILE=artifacts/${APPLICATION_NAME}-${BUILD_VERSION}.jar --build-arg BUILD_FROM=${BUILD_FROM} --build-arg BUILD_ARCH=${BUILD_ARCH}  --tag ${DOCKER_TAG}:latest --tag ${DOCKER_TAG}:${BUILD_VERSION} --file docker/Dockerfile .
     - docker push ${DOCKER_TAG}:${BUILD_VERSION}
     - docker push ${DOCKER_TAG}:latest
   tags:
@@ -54,7 +55,7 @@ build-docker-armv7:
     BUILD_ARCH: "armv7"
     BUILD_FROM: "adoptopenjdk/openjdk11:armv7l-ubuntu-jdk-11.0.15_10-slim"
     DOCKER_PLATFORM: "linux/armv7"
-    DOCKER_TAG: "banny310/hoymiles-dtu-armv7"
+    DOCKER_TAG: "sakrut/hoymiles-dtu-armv7"
 
 build-docker-amd64:
   extends: .build-docker-template
@@ -62,7 +63,7 @@ build-docker-amd64:
     BUILD_ARCH: "amd64"
     BUILD_FROM: "adoptopenjdk/openjdk11:x86_64-ubuntu-jdk-11.0.15_10-slim"
     DOCKER_PLATFORM: "linux/amd64"
-    DOCKER_TAG: "banny310/hoymiles-dtu-amd64"
+    DOCKER_TAG: "sakrut/hoymiles-dtu-amd64"
 
 build-docker-aarch64:
   extends: .build-docker-template
@@ -70,4 +71,4 @@ build-docker-aarch64:
     BUILD_ARCH: "aarch64"
     BUILD_FROM: "adoptopenjdk/openjdk11:aarch64-ubuntu-jdk-11.0.15_10-slim"
     DOCKER_PLATFORM: "linux/aarch64"
-    DOCKER_TAG: "banny310/hoymiles-dtu-aarch64"
+    DOCKER_TAG: "sakrut/hoymiles-dtu-aarch64"
