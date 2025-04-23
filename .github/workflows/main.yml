@@ -1,0 +1,153 @@
+name: Build and Deploy
+
+on:
+  push:
+    tags:
+      - '*'
+
+env:
+  APPLICATION_NAME: "hoymiles-dtu"
+  ARTIFACT_NAME: "hoymiles-dtu"
+  DOCKER_REGISTRY_URL: "hub.docker.com/sakrut"
+  DOCKER_REGISTRY_USERNAME: "sakrut"
+  MAVEN_OPTS: '-DXmx1024m -DXX:MaxPermSize=256m'
+  MAVEN_CLI_OPTS: "--batch-mode --update-snapshots --errors --fail-at-end"
+
+# Prevent concurrent deployments
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Extract version once and use it across jobs
+  extract-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Get version
+        id: get-version
+        run: echo "version=$(git describe --abbrev=0 --tags 2>/dev/null || echo '0.1.0')" >> $GITHUB_OUTPUT
+
+  build-artifact:
+    needs: extract-version
+    runs-on: ubuntu-latest
+    container:
+      image: maven:3.8.3-eclipse-temurin-11
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Maven cache
+        uses: actions/cache@v3
+        with:
+          path: /projects-cache/.m2/
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+      
+      - name: Build with Maven
+        run: mvn clean compile assembly:single ${MAVEN_CLI_OPTS}
+      
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/hoymiles-dtu-1.0-SNAPSHOT-jar-with-dependencies.jar artifacts/${ARTIFACT_NAME}-${{ needs.extract-version.outputs.version }}.jar -v || exit $?
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: artifacts
+          retention-days: 7
+
+  # Single job for all Docker architectures
+  build-docker-images:
+    name: Build Docker Images
+    needs: [extract-version, build-artifact]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: "armv7"
+            platform: "linux/armv7"
+            from: "adoptopenjdk/openjdk11:armv7l-ubuntu-jdk-11.0.15_10-slim"
+            tag: "sakrut/hoymiles-dtu-armv7"
+          - arch: "amd64"
+            platform: "linux/amd64"
+            from: "adoptopenjdk/openjdk11:x86_64-ubuntu-jdk-11.0.15_10-slim"
+            tag: "sakrut/hoymiles-dtu-amd64"
+          - arch: "aarch64"
+            platform: "linux/aarch64"
+            from: "adoptopenjdk/openjdk11:aarch64-ubuntu-jdk-11.0.15_10-slim"
+            tag: "sakrut/hoymiles-dtu-aarch64"
+    
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: artifacts
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.HUBDOCKER_PASSWORD }}
+      
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ${{ matrix.tag }}:latest
+            ${{ matrix.tag }}:${{ needs.extract-version.outputs.version }}
+          build-args: |
+            JAR_FILE=artifacts/${{ env.APPLICATION_NAME }}-${{ needs.extract-version.outputs.version }}.jar
+            BUILD_FROM=${{ matrix.from }}
+            BUILD_ARCH=${{ matrix.arch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Enable BuildKit
+          provenance: false
+          buildkitd-flags: --debug
+
+  # Summary job
+  summary:
+    needs: [extract-version, build-docker-images]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "* **Version:** ${{ needs.extract-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "* **Docker Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo "  * sakrut/hoymiles-dtu-armv7:${{ needs.extract-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "  * sakrut/hoymiles-dtu-armv7:latest" >> $GITHUB_STEP_SUMMARY
+          echo "  * sakrut/hoymiles-dtu-amd64:${{ needs.extract-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "  * sakrut/hoymiles-dtu-amd64:latest" >> $GITHUB_STEP_SUMMARY
+          echo "  * sakrut/hoymiles-dtu-aarch64:${{ needs.extract-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "  * sakrut/hoymiles-dtu-aarch64:latest" >> $GITHUB_STEP_SUMMARY
+          echo "* **Workflow Run:** [Link](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
